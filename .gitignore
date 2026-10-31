@@ -4,6 +4,14 @@
 *.log
 visual_search.json
 !nouns.txt
+!requirements.txt
 Todo.md
 data-dir/
 __pycache__/
+.env
+.env.*
+last_run.json
+*.lnk
+.vscode/
+.idea/
+.DS_Store

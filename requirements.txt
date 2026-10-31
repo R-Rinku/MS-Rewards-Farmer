@@ -1,0 +1,9 @@
+# Core dependencies for Microsoft Rewards Farmer (minimal and fast install)
+selenium>=4.25.0
+requests>=2.32.0
+pillow>=11.0.0
+numpy>=1.26.0
+
+# Optional:
+# ollama>=0.6.0  # Only needed if using local LLM mode (--source llm)
+

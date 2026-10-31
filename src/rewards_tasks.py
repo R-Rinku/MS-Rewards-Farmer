@@ -2,6 +2,7 @@ import logging
 import log_utils
 import os
 import random
+import sys
 import time
 from typing import Callable
 from selenium import webdriver
@@ -9,7 +10,12 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.remote.webelement import WebElement
-from selenium.common.exceptions import StaleElementReferenceException, TimeoutException, NoSuchElementException
+from selenium.common.exceptions import (
+	StaleElementReferenceException,
+	TimeoutException,
+	NoSuchElementException,
+	WebDriverException,
+)
 import tab_utils
 import queries
 import mouse_trajectory
@@ -32,6 +38,91 @@ class RewardsTaskUtils:
 		self.mouse = mouse_trajectory.MouseUtils(driver)
 		self.keyboard = mimic_typing.KeyboardUtils(driver)
 		self.elements = element_selectors.ElementSelectionUtils(driver)
+
+	def is_headless(self) -> bool:
+		"""Return True if running in headless background mode."""
+		if os.environ.get("REWARDS_HEADLESS", "").strip().lower() in ("1", "true", "yes"):
+			return True
+		for mod_name in ("__main__", "main"):
+			mod = sys.modules.get(mod_name)
+			if mod and getattr(mod, "HEADLESS", False):
+				return True
+		return False
+
+	def is_signed_in(self) -> bool:
+		"""Check if the browser profile is authenticated on Microsoft Rewards."""
+		try:
+			url = self.driver.current_url.lower()
+		except Exception:
+			return False
+
+		# Explicit login / marketing URLs mean the session is NOT signed in
+		if any(sub in url for sub in ("/about", "/welcome", "/auth/login", "login.live.com", "account.microsoft.com")):
+			return False
+
+		# Must find authenticated dashboard elements to confirm active sign-in
+		try:
+			if self.driver.find_elements(By.CSS_SELECTOR, '[id$="-tab-/earn"], [id$="-tab-/dashboard"], #streaks'):
+				return True
+			if self.driver.find_elements(By.CSS_SELECTOR, 'a[href*="/status/levelbenefits"], [data-bi-name="points-breakdown"]'):
+				return True
+		except Exception:
+			pass
+
+		return False
+
+	def ensure_signed_in(self, timeout_seconds: int = 300) -> bool:
+		"""Validate if the account is signed in; if not, open sign-in and keep browser open."""
+		# Give initial page load 3 seconds to settle or redirect
+		time.sleep(3)
+		if self.is_signed_in():
+			logger.info("[AUTH] Profile is authenticated on Microsoft Rewards.")
+			return True
+
+		if self.is_headless():
+			logger.error("=" * 70)
+			logger.error("[AUTH REQUIRED] Profile is NOT signed in to Microsoft Rewards!")
+			logger.error("Cannot sign in while running in headless mode.")
+			logger.error("Please run the script in visible mode once to log in:")
+			logger.error("    python src/main.py")
+			logger.error("Your credentials and session will be saved in data-dir for all future runs.")
+			logger.error("=" * 70)
+			return False
+
+		# In visible mode: navigate to login URL if currently on /about or /welcome
+		try:
+			current_url = self.driver.current_url.lower()
+			if "/about" in current_url or "/welcome" in current_url:
+				logger.info("Navigating to Microsoft Rewards sign-in page...")
+				self.driver.get("https://rewards.bing.com/auth/login")
+		except Exception:
+			pass
+
+		logger.warning("=" * 70)
+		logger.warning("[SIGN-IN REQUIRED] Microsoft Rewards profile is not signed in.")
+		logger.warning("A Microsoft Edge window has been opened for you.")
+		logger.warning("Please sign in to your Microsoft account in the opened Edge window.")
+		logger.warning("(If Microsoft asks 'Is this you?' or 'Pick an account', click your account.)")
+		logger.warning("The browser will remain open while waiting for you to sign in...")
+		logger.warning("======================================================================")
+
+		start_time = time.time()
+		while time.time() - start_time < timeout_seconds:
+			time.sleep(2)
+			try:
+				if self.is_signed_in():
+					logger.info("[AUTH SUCCESS] Sign-in verified! Credentials and session saved to data-dir.")
+					time.sleep(3)
+					if "rewards.bing.com" not in self.driver.current_url.lower() or "/auth" in self.driver.current_url.lower():
+						self.driver.get("https://rewards.bing.com/")
+						self.tab_utils.ensure_focus()
+					return True
+			except WebDriverException:
+				logger.warning("Browser window was closed by the user.")
+				return False
+
+		logger.error("[TIMEOUT] Timed out waiting for sign-in (%d seconds). Edge will close.", timeout_seconds)
+		return False
 
 	def find_element(self, xpath: str):
 		return self.driver.find_element(By.XPATH, xpath)
@@ -284,6 +375,9 @@ class RewardsTaskUtils:
 			logger.warning("Could not find the 'Claim Bonus Points' button. There are likely no bonus points to claim at this time.")
 
 	def complete_all_tasks(self):
+		if not self.ensure_signed_in():
+			return
+
 		# Each task is run independently. The Rewards UI differs by market and
 		# changes between deploys, so a task the current variant does not ship
 		# must not take the remaining ones down with it.

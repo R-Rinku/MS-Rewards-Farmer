@@ -1,3 +1,4 @@
+import argparse
 import logging
 import os
 import sys
@@ -13,11 +14,41 @@ HEADLESS = os.environ.get("REWARDS_HEADLESS", "").strip().lower() in ("1", "true
 logger = logging.getLogger(__name__)
 
 
+def parse_args():
+	"""Parse command-line arguments when invoked directly from the CLI.
+
+	Uses parse_known_args() so external test runners like unittest do not fail on unknown flags.
+	"""
+	parser = argparse.ArgumentParser(
+		description="Microsoft Rewards automated farmer (runs directly via src/main.py)"
+	)
+	parser.add_argument(
+		"--headless",
+		action="store_true",
+		default=None,
+		help="Run Edge in headless background mode (or set REWARDS_HEADLESS=1)"
+	)
+	parser.add_argument(
+		"--source",
+		choices=["trends", "llm"],
+		default=None,
+		help="Query source backend: 'trends' (default, keyless public feeds) or 'llm' (Ollama)"
+	)
+	parser.add_argument(
+		"--accounts",
+		type=str,
+		default=None,
+		help="Comma-separated profile names to run through (or set REWARDS_ACCOUNTS=...)"
+	)
+	known, _ = parser.parse_known_args()
+	return known
+
+
 def build_options(account: accounts.Account) -> webdriver.EdgeOptions:
 	options = webdriver.EdgeOptions()
 
 	options.add_experimental_option("excludeSwitches", ["enable-automation"])
-	options.add_experimental_option('useAutomationExtension', False)
+	options.add_experimental_option("useAutomationExtension", False)
 	options.add_argument("--disable-blink-features=AutomationControlled")
 	options.add_argument(f"--user-data-dir={account.user_data_dir}")
 	options.add_argument(f"--profile-directory={account.profile_name}")
@@ -70,7 +101,17 @@ def run_account(account: accounts.Account) -> bool:
 
 
 def main() -> int:
+	global HEADLESS
 	log_utils.setup_logging()
+
+	args = parse_args()
+	if args.headless is not None:
+		HEADLESS = args.headless
+		os.environ["REWARDS_HEADLESS"] = "1" if args.headless else "0"
+	if args.source:
+		os.environ["QUERY_SOURCE"] = args.source
+	if args.accounts:
+		os.environ["REWARDS_ACCOUNTS"] = args.accounts
 
 	try:
 		configured = accounts.configured()
@@ -105,8 +146,11 @@ def main() -> int:
 		logger.info("%s/%s accounts ran", started, len(configured))
 
 	# Nothing is watching a container, and stdin is not a terminal there.
-	if not HEADLESS:
-		input("Press Enter to exit...")
+	if not HEADLESS and sys.stdin.isatty():
+		try:
+			input("Press Enter to exit...")
+		except (EOFError, KeyboardInterrupt):
+			pass
 
 	return 0 if started else 1
 
